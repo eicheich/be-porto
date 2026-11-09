@@ -1,5 +1,6 @@
 import io
 import time
+import os
 import numpy as np
 from PIL import Image
 from src.config import MODEL_PATH, TARGET_SIZE, CLASS_NAMES
@@ -7,10 +8,16 @@ from src.config import MODEL_PATH, TARGET_SIZE, CLASS_NAMES
 class ImagePredictor:
     def __init__(self, model_path=MODEL_PATH):
         self.model_path = model_path
-        self.model = None
-        self._load_model()
+        self.model = None  # Model TIDAK dimuat saat inisialisasi (Lazy Loading)
+
+    def get_model(self):
+        """Getter model dengan mekanisme Lazy Loading."""
+        if self.model is None:
+            self._load_model()
+        return self.model
 
     def _load_model(self):
+        """Memuat model hanya saat dibutuhkan pertama kali."""
         try:
             import tensorflow as tf
             tf.config.threading.set_intra_op_parallelism_threads(1)
@@ -19,23 +26,23 @@ class ImagePredictor:
             pass
 
         try:
-            # Import di dalam method untuk fleksibilitas backend keras/tensorflow
             import keras
-            print(f"[INFO] Memuat model Keras dari: {self.model_path}")
+            print(f"[INFO] [Lazy Load] Memuat model Keras dari: {self.model_path}")
             self.model = keras.models.load_model(self.model_path)
-            print("[INFO] Model berhasil dimuat ke memori.")
+            print("[INFO] Model Keras berhasil dimuat ke memori.")
         except Exception as e:
             try:
                 from tensorflow import keras as tf_keras
-                print(f"[INFO] Mencoba memuat model via tf.keras dari: {self.model_path}")
+                print(f"[INFO] [Lazy Load] Mencoba memuat via tf.keras dari: {self.model_path}")
                 self.model = tf_keras.models.load_model(self.model_path)
-                print("[INFO] Model berhasil dimuat via tf.keras.")
+                print("[INFO] Model Keras berhasil dimuat via tf.keras.")
             except Exception as err:
-                print(f"[ERROR] Gagal memuat model: {err}")
+                print(f"[ERROR] Gagal memuat model klasifikasi gambar: {err}")
                 self.model = None
 
     def is_ready(self) -> bool:
-        return self.model is not None
+        """Cek apakah model sudah dimuat atau file model ada di disk."""
+        return self.model is not None or os.path.exists(self.model_path)
 
     def preprocess_image(self, file_stream) -> np.ndarray:
         """
@@ -44,43 +51,28 @@ class ImagePredictor:
         """
         image = Image.open(file_stream)
         
-        # Pastikan format gambar selalu 3-channel RGB (mengatasi RGBA atau grayscale)
         if image.mode != "RGB":
             image = image.convert("RGB")
 
-        # Resize gambar ke dimensi input model
         image = image.resize(TARGET_SIZE, Image.Resampling.LANCZOS)
-
-        # Konversi ke NumPy array dan normalisasi pixel 0 - 1
         img_array = np.asarray(image, dtype=np.float32) / 255.0
-
-        # Tambahkan dimensi batch: (150, 150, 3) -> (1, 150, 150, 3)
         img_array = np.expand_dims(img_array, axis=0)
         return img_array
 
     def predict(self, file_stream) -> dict:
-        """
-        Menjalankan inferensi pada input gambar.
-        Mengembalikan label prediksi, confidence, dan probabilitas per kelas.
-        """
-        if not self.is_ready():
-            raise RuntimeError("Model belum berhasil dimuat.")
+        """Menjalankan inferensi pada stream gambar (Lazy load jika belum dimuat)."""
+        model = self.get_model()
+        if model is None:
+            raise RuntimeError(f"Model klasifikasi gambar di '{self.model_path}' tidak tersedia atau gagal dimuat.")
 
         start_time = time.time()
-        
-        # Preprocessing gambar
-        input_tensor = self.preprocess_image(file_stream)
+        processed_img = self.preprocess_image(file_stream)
+        raw_probs = model.predict(processed_img, verbose=0)[0]
 
-        # Inferensi model
-        predictions = self.model.predict(input_tensor, verbose=0)
-        raw_probs = predictions[0]
-
-        # Cari kelas dengan probabilitas tertinggi
         top_idx = int(np.argmax(raw_probs))
         predicted_class = CLASS_NAMES[top_idx] if top_idx < len(CLASS_NAMES) else f"class_{top_idx}"
         confidence = float(raw_probs[top_idx])
 
-        # Pemetaan probabilitas seluruh kelas
         class_probabilities = {}
         for idx, prob in enumerate(raw_probs):
             name = CLASS_NAMES[idx] if idx < len(CLASS_NAMES) else f"class_{idx}"
@@ -95,6 +87,11 @@ class ImagePredictor:
             "execution_time_ms": duration_ms
         }
 
-# Instance singleton predictor
-predictor = ImagePredictor()
+# Lazy Singleton Instance (tidak memuat bobot model saat modul di-import)
+_image_predictor_instance = None
 
+def get_image_predictor() -> ImagePredictor:
+    global _image_predictor_instance
+    if _image_predictor_instance is None:
+        _image_predictor_instance = ImagePredictor()
+    return _image_predictor_instance

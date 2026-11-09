@@ -10,10 +10,16 @@ MNIST_MODEL_PATH = os.path.join(BASE_DIR, "model", "mnist_cnn_model.keras")
 class MNISTPredictor:
     def __init__(self, model_path=MNIST_MODEL_PATH):
         self.model_path = model_path
-        self.model = None
-        self._load_model()
+        self.model = None  # Model TIDAK dimuat saat inisialisasi (Lazy Loading)
+
+    def get_model(self):
+        """Getter model dengan mekanisme Lazy Loading."""
+        if self.model is None:
+            self._load_model()
+        return self.model
 
     def _load_model(self):
+        """Memuat model MNIST hanya saat dibutuhkan pertama kali."""
         try:
             import tensorflow as tf
             tf.config.threading.set_intra_op_parallelism_threads(1)
@@ -23,13 +29,13 @@ class MNISTPredictor:
 
         try:
             import keras
-            print(f"[INFO] Memuat model MNIST CNN dari: {self.model_path}")
+            print(f"[INFO] [Lazy Load] Memuat model MNIST CNN dari: {self.model_path}")
             self.model = keras.models.load_model(self.model_path)
             print("[INFO] Model MNIST CNN berhasil dimuat ke memori.")
         except Exception as e:
             try:
                 from tensorflow import keras as tf_keras
-                print(f"[INFO] Mencoba memuat model MNIST via tf.keras dari: {self.model_path}")
+                print(f"[INFO] [Lazy Load] Mencoba memuat model MNIST via tf.keras dari: {self.model_path}")
                 self.model = tf_keras.models.load_model(self.model_path)
                 print("[INFO] Model MNIST CNN berhasil dimuat via tf.keras.")
             except Exception as err:
@@ -37,7 +43,8 @@ class MNISTPredictor:
                 self.model = None
 
     def is_ready(self) -> bool:
-        return self.model is not None
+        """Cek apakah model sudah dimuat atau file model ada di disk."""
+        return self.model is not None or os.path.exists(self.model_path)
 
     def preprocess_base64_image(self, base64_str: str) -> np.ndarray:
         """
@@ -46,7 +53,7 @@ class MNISTPredictor:
         3. Konversi gambar transparan (RGBA) ke latar belakang putih jika diperlukan
         4. Ubah ke Grayscale (1 channel)
         5. Resize ke 28x28 pixel
-        6. Inversi warna jika latar belakang putih dan tulisan hitam (agar sesuai format MNIST: latar hitam, tulisan putih)
+        6. Inversi warna jika latar belakang putih dan tulisan hitam (MNIST = latar hitam, tulisan putih)
         7. Normalisasi pixel (0.0 - 1.0)
         8. Reshape ke (1, 28, 28, 1)
         """
@@ -66,7 +73,6 @@ class MNISTPredictor:
 
         # 3. Tangani alpha channel (canvas transparan browser)
         if image.mode in ("RGBA", "LA") or (image.mode == "P" and "transparency" in image.info):
-            # Gabungkan gambar di atas latar belakang putih
             bg = Image.new("RGBA", image.size, (255, 255, 255, 255))
             if image.mode != "RGBA":
                 image = image.convert("RGBA")
@@ -91,14 +97,13 @@ class MNISTPredictor:
         return img_array
 
     def predict(self, base64_str: str) -> dict:
-        """
-        Menjalankan inferensi dan mengembalikan predicted_digit (0-9) dan confidence score.
-        """
-        if not self.is_ready():
-            raise RuntimeError("Model MNIST CNN belum berhasil dimuat.")
+        """Menjalankan inferensi pada gambar digit base64 (Lazy load jika belum dimuat)."""
+        model = self.get_model()
+        if model is None:
+            raise RuntimeError(f"Model MNIST CNN di '{self.model_path}' tidak tersedia atau gagal dimuat.")
 
         input_tensor = self.preprocess_base64_image(base64_str)
-        predictions = self.model.predict(input_tensor, verbose=0)[0]
+        predictions = model.predict(input_tensor, verbose=0)[0]
 
         predicted_digit = int(np.argmax(predictions))
         confidence = float(predictions[predicted_digit])
@@ -109,6 +114,11 @@ class MNISTPredictor:
             "probabilities": [round(float(p), 4) for p in predictions]
         }
 
-# Instance singleton
-mnist_predictor = MNISTPredictor()
+# Lazy Singleton Instance (tidak memuat bobot model saat modul di-import)
+_mnist_predictor_instance = None
 
+def get_mnist_predictor() -> MNISTPredictor:
+    global _mnist_predictor_instance
+    if _mnist_predictor_instance is None:
+        _mnist_predictor_instance = MNISTPredictor()
+    return _mnist_predictor_instance

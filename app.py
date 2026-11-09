@@ -17,28 +17,33 @@ from src.config import (
     PORT,
     DEBUG
 )
-from src.predictor import predictor
-try:
-    from src.mnist_predictor import mnist_predictor
-except Exception as e:
-    print(f"[WARNING] Tidak dapat memuat mnist_predictor: {e}")
-    mnist_predictor = None
-
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Load model Random Forest untuk prediksi harga rumah
-house_model = None
-for candidate in [
-    os.path.join(BASE_DIR, "model", "model_random_forest.joblib"),
-    os.path.join(BASE_DIR, "mode", "model_random_forest.joblib"),
-]:
-    if os.path.exists(candidate):
-        try:
-            house_model = joblib.load(candidate)
-            print(f"[INFO] Model Random Forest berhasil dimuat dari: {candidate}")
-            break
-        except Exception as e:
-            print(f"[ERROR] Gagal memuat model Random Forest: {e}")
+_house_model = None
+
+def get_house_model():
+    global _house_model
+    if _house_model is None:
+        for candidate in [
+            os.path.join(BASE_DIR, "model", "model_random_forest.joblib"),
+            os.path.join(BASE_DIR, "mode", "model_random_forest.joblib"),
+        ]:
+            if os.path.exists(candidate):
+                try:
+                    _house_model = joblib.load(candidate)
+                    print(f"[INFO] [Lazy Load] Model Random Forest berhasil dimuat dari: {candidate}")
+                    break
+                except Exception as e:
+                    print(f"[ERROR] Gagal memuat model Random Forest: {e}")
+    return _house_model
+
+def get_image_predictor():
+    from src.predictor import get_image_predictor as _get
+    return _get()
+
+def get_mnist_predictor():
+    from src.mnist_predictor import get_mnist_predictor as _get
+    return _get()
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = MAX_CONTENT_LENGTH
@@ -72,22 +77,19 @@ def index():
 def health():
     """
     Endpoint Health Check.
-    Memeriksa apakah server berjalan dan model-model telah berhasil dimuat.
+    Memeriksa apakah server berjalan (tidak memicu pemuatan model).
     """
-    catdog_ready = predictor.is_ready() if predictor else False
-    mnist_ready = mnist_predictor.is_ready() if mnist_predictor else False
-    house_ready = house_model is not None
-    overall_ready = catdog_ready or mnist_ready or house_ready
-    status_code = 200 if overall_ready else 503
-
     return jsonify({
-        "status": "healthy" if overall_ready else "degraded",
-        "model_loaded": catdog_ready,
-        "mnist_model_loaded": mnist_ready,
-        "house_model_loaded": house_ready,
+        "status": "healthy",
+        "lazy_loading": True,
+        "models_in_memory": {
+            "house_model": _house_model is not None,
+            "catdog_model": get_image_predictor().model is not None,
+            "mnist_model": get_mnist_predictor().model is not None,
+        },
         "model_path": MODEL_PATH,
         "target_classes": CLASS_NAMES
-    }), status_code
+    }), 200
 
 
 @app.route("/predict-house-pricing", methods=["POST"])
@@ -96,7 +98,8 @@ def predict_house_pricing():
     Endpoint Prediksi Harga Rumah (Random Forest).
     Menerima JSON dengan field: LB, LT, KT, KM, GRS.
     """
-    if house_model is None:
+    model = get_house_model()
+    if model is None:
         return jsonify({
             "status": "gagal",
             "error": "Model Random Forest belum dimuat atau tidak ditemukan di server."
@@ -159,13 +162,8 @@ def predict():
     Menerima file gambar via multipart/form-data (key: 'image' atau 'file')
     atau Base64 via JSON body (key: 'image_base64').
     """
-    if not predictor.is_ready():
-        return jsonify({
-            "success": False,
-            "error": "Model machine learning belum siap atau gagal dimuat."
-        }), 503
-
     image_stream = None
+    predictor = get_image_predictor()
 
     # 1. Penanganan Multipart Form Data (Upload File langsung dari Frontend)
     if "image" in request.files or "file" in request.files:
@@ -226,12 +224,6 @@ def predict_handwrite():
     Endpoint Prediksi Angka Tulisan Tangan (MNIST).
     Menerima JSON dengan format: {"image_base64": "..."}
     """
-    if mnist_predictor is None or not mnist_predictor.is_ready():
-        return jsonify({
-            "success": False,
-            "error": "Model MNIST CNN belum siap atau gagal dimuat."
-        }), 503
-
     if not request.is_json:
         return jsonify({
             "success": False,
@@ -248,7 +240,8 @@ def predict_handwrite():
         }), 400
 
     try:
-        result = mnist_predictor.predict(image_base64)
+        predictor = get_mnist_predictor()
+        result = predictor.predict(image_base64)
         return jsonify({
             "predicted_digit": result["predicted_digit"],
             "confidence": result["confidence"]

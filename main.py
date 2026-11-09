@@ -1,52 +1,40 @@
 import io
 import os
 import sys
+from contextlib import asynccontextmanager
+from typing import Optional
 
-# Konfigurasi pembatas resource & threading untuk server tanpa GPU / cPanel CloudLinux
+# 1. Konfigurasi Environment Pembatas Resource & Threading (CloudLinux nproc limit & CPU mode)
 os.environ.setdefault("CUDA_VISIBLE_DEVICES", "-1")
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 os.environ.setdefault("TF_NUM_INTRAOP_THREADS", "1")
 os.environ.setdefault("TF_NUM_INTEROP_THREADS", "1")
 
-try:
-    import tensorflow as tf
-    tf.config.threading.set_intra_op_parallelism_threads(1)
-    tf.config.threading.set_inter_op_parallelism_threads(1)
-except Exception:
-    pass
-
-from contextlib import asynccontextmanager
-from typing import Optional
-
-import joblib
 import pandas as pd
 import uvicorn
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
-from src.mnist_predictor import mnist_predictor
 
-# Inisialisasi variabel global untuk model
-model = None
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Lazy / safe import for image classification predictor
-try:
-    from src.predictor import predictor
-except Exception as e:
-    print(f"[WARNING] Could not load image predictor: {e}")
-    predictor = None
+# ==============================================================================
+# 2. MEKANISME LAZY LOADING SINGLETON GETTERS
+# Tidak ada pemuatan model machine learning di tingkat modul global saat startup!
+# ==============================================================================
+_house_model = None
+_mnist_predictor = None
+_classifier_predictor = None
 
 
 def get_model_path() -> Optional[str]:
-    """Mencari lokasi file model di folder mode/ atau model/."""
+    """Mencari lokasi file model Random Forest di folder model/ atau mode/."""
     candidates = [
-        os.path.join(BASE_DIR, "mode", "model_random_forest.joblib"),
         os.path.join(BASE_DIR, "model", "model_random_forest.joblib"),
-        "mode/model_random_forest.joblib",
+        os.path.join(BASE_DIR, "mode", "model_random_forest.joblib"),
         "model/model_random_forest.joblib",
+        "mode/model_random_forest.joblib",
     ]
     for path in candidates:
         if os.path.exists(path):
@@ -54,32 +42,73 @@ def get_model_path() -> Optional[str]:
     return None
 
 
+def get_house_model():
+    """Lazy getter untuk model Random Forest (House Pricing)."""
+    global _house_model
+    if _house_model is None:
+        model_path = get_model_path()
+        if model_path:
+            import joblib
+            print(f"[INFO] [Lazy Load] Memuat model Random Forest dari: {model_path}")
+            _house_model = joblib.load(model_path)
+            print("[INFO] Model Random Forest berhasil dimuat ke memori.")
+        else:
+            print("[WARNING] File 'model_random_forest.joblib' tidak ditemukan di server.")
+    return _house_model
+
+
+def get_mnist_predictor():
+    """Lazy getter untuk MNIST Predictor."""
+    global _mnist_predictor
+    if _mnist_predictor is None:
+        from src.mnist_predictor import get_mnist_predictor as _get_mnist
+        _mnist_predictor = _get_mnist()
+    return _mnist_predictor
+
+
+def get_mnist_model():
+    """Lazy getter untuk model Keras MNIST."""
+    predictor = get_mnist_predictor()
+    return predictor.get_model()
+
+
+def get_classifier_predictor():
+    """Lazy getter untuk Image Predictor (Cats vs Dogs)."""
+    global _classifier_predictor
+    if _classifier_predictor is None:
+        from src.predictor import get_image_predictor as _get_img
+        _classifier_predictor = _get_img()
+    return _classifier_predictor
+
+
+def get_classifier_model():
+    """Lazy getter untuk model Keras Image Classifier (Cats vs Dogs)."""
+    predictor = get_classifier_predictor()
+    return predictor.get_model()
+
+
+# ==============================================================================
+# 3. FASTAPI APP INITIALIZATION
+# ==============================================================================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Event lifespan untuk memuat model saat startup aplikasi."""
-    global model
-    model_path = get_model_path()
-    if model_path:
-        try:
-            print(f"[INFO] Memuat model Random Forest dari: {model_path}")
-            model = joblib.load(model_path)
-            print("[INFO] Model Random Forest berhasil dimuat ke memori.")
-        except Exception as e:
-            print(f"[ERROR] Gagal memuat file model: {e}")
-            model = None
-    else:
-        print("[WARNING] File model 'model_random_forest.joblib' tidak ditemukan di folder mode/ atau model/.")
+    """
+    Startup instan tanpa memuat model ke memori (Lazy Loading aktif).
+    Menghindari killed by signal 15 / startup timeout pada Phusion Passenger cPanel.
+    """
+    print("[INFO] Server FastAPI berhasil boot instan (Lazy Loading aktif).")
     yield
+    print("[INFO] Server FastAPI shutdown.")
 
 
 app = FastAPI(
-    title="House Pricing Prediction API",
-    description="Backend API berbasis FastAPI untuk estimasi harga rumah menggunakan model Random Forest Regressor",
-    version="1.0.0",
+    title="House Pricing & ML API",
+    description="Backend API berbasis FastAPI dengan mekanisme Lazy Loading untuk kompatibilitas CloudLinux/cPanel Passenger",
+    version="1.2.0",
     lifespan=lifespan
 )
 
-# Konfigurasi CORS agar frontend dapat mengakses endpoint
+# Konfigurasi CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -89,9 +118,9 @@ app.add_middleware(
 )
 
 
-# ==========================================
-# 3. SKEMA VALIDASI DATA (Pydantic Models)
-# ==========================================
+# ==============================================================================
+# 4. SKEMA VALIDASI DATA (Pydantic Models)
+# ==============================================================================
 class HouseFeatures(BaseModel):
     LB: float = Field(..., gt=0, description="Luas Bangunan (harus lebih besar dari 0)", examples=[120.0])
     LT: float = Field(..., gt=0, description="Luas Tanah (harus lebih besar dari 0)", examples=[150.0])
@@ -114,17 +143,34 @@ class HandwriteResponse(BaseModel):
     confidence: float = Field(..., description="Tingkat keyakinan model terhadap prediksi (0.0 - 1.0)")
 
 
-# ==========================================
-# 2. STRUKTUR ENDPOINT
-# ==========================================
-@app.get("/", summary="Health Check")
+# ==============================================================================
+# 5. ENDPOINTS
+# ==============================================================================
+@app.get("/", summary="Health Check Root")
 def health_check():
-    """Endpoint kesehatan sederhana yang mengembalikan status server dan kesiapan model."""
+    """Endpoint kesehatan cepat tanpa memicu pemuatan model ke memori."""
     return {
         "status": "online",
-        "message": "House Pricing Prediction API is running",
-        "model_loaded": model is not None,
-        "features_required": ["LB", "LT", "KT", "KM", "GRS"]
+        "message": "FastAPI ML Backend is running (Lazy Loading enabled)",
+        "model_files": {
+            "house_pricing": os.path.exists(get_model_path() or ""),
+            "mnist_cnn": os.path.exists(os.path.join(BASE_DIR, "model", "mnist_cnn_model.keras")),
+            "image_classifier": os.path.exists(os.path.join(BASE_DIR, "model", "model_classification_3class.keras")),
+        }
+    }
+
+
+@app.get("/health", summary="Health Check Status")
+def health():
+    """Memeriksa status server dan apakah model sudah dimuat ke memori atau belum."""
+    return {
+        "status": "healthy",
+        "lazy_loading": True,
+        "models_in_memory": {
+            "house_model": _house_model is not None,
+            "mnist_model": _mnist_predictor is not None and _mnist_predictor.model is not None,
+            "classifier_model": _classifier_predictor is not None and _classifier_predictor.model is not None,
+        }
     }
 
 
@@ -137,10 +183,9 @@ def health_check():
 def predict_house_pricing(features: HouseFeatures):
     """
     Endpoint utama untuk melakukan prediksi harga rumah.
-    Menerima data HouseFeatures, mengubah menjadi DataFrame pandas,
-    dan melakukan prediksi menggunakan model Random Forest.
+    Model Random Forest akan dimuat secara lazy saat pertama kali dipanggil.
     """
-    global model
+    model = get_house_model()
     if model is None:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -148,7 +193,6 @@ def predict_house_pricing(features: HouseFeatures):
         )
 
     try:
-        # Konversi data input Pydantic menjadi pandas DataFrame dengan nama kolom yang sesuai
         input_data = {
             "LB": [features.LB],
             "LT": [features.LT],
@@ -157,8 +201,6 @@ def predict_house_pricing(features: HouseFeatures):
             "GRS": [features.GRS]
         }
         df_input = pd.DataFrame(input_data, columns=["LB", "LT", "KT", "KM", "GRS"])
-
-        # Lakukan prediksi menggunakan model
         raw_prediction = model.predict(df_input)
         estimasi_nilai = float(raw_prediction[0])
 
@@ -187,17 +229,11 @@ def predict_house_pricing(features: HouseFeatures):
 def predict_handwrite(payload: HandwriteRequest):
     """
     Endpoint untuk mendeteksi angka tulisan tangan (0-9) dari gambar canvas base64.
-    Menerima JSON: {"image_base64": "data:image/png;base64,..." atau "base64_string"}
-    Mengembalikan: {"predicted_digit": int, "confidence": float}
+    Model MNIST CNN akan dimuat secara lazy saat pertama kali dipanggil.
     """
-    if mnist_predictor is None or not mnist_predictor.is_ready():
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Model MNIST CNN belum siap atau file 'model/mnist_cnn_model.keras' gagal dimuat."
-        )
-
+    predictor = get_mnist_predictor()
     try:
-        result = mnist_predictor.predict(payload.image_base64)
+        result = predictor.predict(payload.image_base64)
         return HandwriteResponse(
             predicted_digit=result["predicted_digit"],
             confidence=result["confidence"]
@@ -214,32 +250,20 @@ def predict_handwrite(payload: HandwriteRequest):
         )
 
 
-@app.get("/health", summary="Health Check Model")
-def health():
-    ready = predictor is not None and predictor.is_ready()
-    mnist_ready = mnist_predictor is not None and mnist_predictor.is_ready()
-    return {
-        "status": "healthy" if (ready or mnist_ready or model is not None) else "degraded",
-        "model_loaded": ready,
-        "house_model_loaded": model is not None,
-        "mnist_model_loaded": mnist_ready
-    }
-
-
-# Endpoint untuk Prediksi Gambar (Dog vs Cat) & fallback
 @app.post("/predict", summary="Klasifikasi Gambar (Cats vs Dogs) atau Fallback")
 async def predict(
     request: Request,
     image: Optional[UploadFile] = File(None),
     file: Optional[UploadFile] = File(None)
 ):
+    """
+    Endpoint Klasifikasi Gambar (Cats vs Dogs).
+    Menerima file gambar (multipart/form-data) atau payload JSON base64.
+    Model Keras akan dimuat secara lazy saat pertama kali dipanggil.
+    """
     upload = image or file
     if upload is not None and upload.filename:
-        if predictor is None or not predictor.is_ready():
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Model klasifikasi gambar belum siap atau gagal dimuat."
-            )
+        predictor = get_classifier_predictor()
         try:
             contents = await upload.read()
             stream = io.BytesIO(contents)
@@ -264,8 +288,7 @@ async def predict(
             features = HouseFeatures(**body)
             return predict_house_pricing(features)
         elif "image_base64" in body:
-            if predictor is None or not predictor.is_ready():
-                raise HTTPException(status_code=503, detail="Model belum siap.")
+            predictor = get_classifier_predictor()
             import base64
             b64_data = body["image_base64"]
             if "," in b64_data:
