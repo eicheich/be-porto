@@ -1,5 +1,8 @@
 import io
+import os
 import base64
+import joblib
+import pandas as pd
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from werkzeug.exceptions import RequestEntityTooLarge
@@ -20,6 +23,22 @@ try:
 except Exception as e:
     print(f"[WARNING] Tidak dapat memuat mnist_predictor: {e}")
     mnist_predictor = None
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Load model Random Forest untuk prediksi harga rumah
+house_model = None
+for candidate in [
+    os.path.join(BASE_DIR, "model", "model_random_forest.joblib"),
+    os.path.join(BASE_DIR, "mode", "model_random_forest.joblib"),
+]:
+    if os.path.exists(candidate):
+        try:
+            house_model = joblib.load(candidate)
+            print(f"[INFO] Model Random Forest berhasil dimuat dari: {candidate}")
+            break
+        except Exception as e:
+            print(f"[ERROR] Gagal memuat model Random Forest: {e}")
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = MAX_CONTENT_LENGTH
@@ -53,18 +72,84 @@ def index():
 def health():
     """
     Endpoint Health Check.
-    Memeriksa apakah server berjalan dan model telah berhasil dimuat.
+    Memeriksa apakah server berjalan dan model-model telah berhasil dimuat.
     """
-    model_ready = predictor.is_ready()
-    status_code = 200 if model_ready else 503
+    catdog_ready = predictor.is_ready() if predictor else False
+    mnist_ready = mnist_predictor.is_ready() if mnist_predictor else False
+    house_ready = house_model is not None
+    overall_ready = catdog_ready or mnist_ready or house_ready
+    status_code = 200 if overall_ready else 503
 
     return jsonify({
-        "status": "healthy" if model_ready else "degraded",
-        "model_loaded": model_ready,
+        "status": "healthy" if overall_ready else "degraded",
+        "model_loaded": catdog_ready,
+        "mnist_model_loaded": mnist_ready,
+        "house_model_loaded": house_ready,
         "model_path": MODEL_PATH,
-        "target_classes": CLASS_NAMES,
-        "input_shape": [150, 150, 3]
+        "target_classes": CLASS_NAMES
     }), status_code
+
+
+@app.route("/predict-house-pricing", methods=["POST"])
+def predict_house_pricing():
+    """
+    Endpoint Prediksi Harga Rumah (Random Forest).
+    Menerima JSON dengan field: LB, LT, KT, KM, GRS.
+    """
+    if house_model is None:
+        return jsonify({
+            "status": "gagal",
+            "error": "Model Random Forest belum dimuat atau tidak ditemukan di server."
+        }), 500
+
+    if not request.is_json:
+        return jsonify({
+            "status": "gagal",
+            "error": "Payload harus berformat JSON dengan header Content-Type: application/json."
+        }), 400
+
+    data = request.get_json()
+    required_fields = ["LB", "LT", "KT", "KM", "GRS"]
+    for field in required_fields:
+        if field not in data:
+            return jsonify({
+                "status": "gagal",
+                "error": f"Field '{field}' wajib disertakan."
+            }), 400
+
+    try:
+        lb = float(data["LB"])
+        lt = float(data["LT"])
+        kt = int(data["KT"])
+        km = int(data["KM"])
+        grs = int(data["GRS"])
+
+        if lb <= 0 or lt <= 0 or kt < 0 or km < 0 or grs < 0:
+            return jsonify({
+                "status": "gagal",
+                "error": "Nilai LB dan LT harus > 0, serta KT, KM, GRS harus >= 0."
+            }), 400
+
+        df_input = pd.DataFrame([{
+            "LB": lb,
+            "LT": lt,
+            "KT": kt,
+            "KM": km,
+            "GRS": grs
+        }], columns=["LB", "LT", "KT", "KM", "GRS"])
+
+        raw_pred = house_model.predict(df_input)
+        estimasi_nilai = float(raw_pred[0])
+
+        return jsonify({
+            "estimasi_harga": estimasi_nilai,
+            "status": "sukses"
+        }), 200
+    except Exception as e:
+        return jsonify({
+            "status": "gagal",
+            "error": f"Terjadi kesalahan saat memprediksi harga: {str(e)}"
+        }), 500
 
 
 @app.route("/predict", methods=["POST"])
