@@ -15,6 +15,13 @@ class MNISTPredictor:
 
     def _load_model(self):
         try:
+            import tensorflow as tf
+            tf.config.threading.set_intra_op_parallelism_threads(1)
+            tf.config.threading.set_inter_op_parallelism_threads(1)
+        except Exception:
+            pass
+
+        try:
             import keras
             print(f"[INFO] Memuat model MNIST CNN dari: {self.model_path}")
             self.model = keras.models.load_model(self.model_path)

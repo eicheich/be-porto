@@ -12,6 +12,13 @@ class ImagePredictor:
 
     def _load_model(self):
         try:
+            import tensorflow as tf
+            tf.config.threading.set_intra_op_parallelism_threads(1)
+            tf.config.threading.set_inter_op_parallelism_threads(1)
+        except Exception:
+            pass
+
+        try:
             # Import di dalam method untuk fleksibilitas backend keras/tensorflow
             import keras
             print(f"[INFO] Memuat model Keras dari: {self.model_path}")

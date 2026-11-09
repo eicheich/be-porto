@@ -1,5 +1,21 @@
 import io
 import os
+import sys
+
+# Konfigurasi pembatas resource & threading untuk server tanpa GPU / cPanel CloudLinux
+os.environ.setdefault("CUDA_VISIBLE_DEVICES", "-1")
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("TF_NUM_INTRAOP_THREADS", "1")
+os.environ.setdefault("TF_NUM_INTEROP_THREADS", "1")
+
+try:
+    import tensorflow as tf
+    tf.config.threading.set_intra_op_parallelism_threads(1)
+    tf.config.threading.set_inter_op_parallelism_threads(1)
+except Exception:
+    pass
+
 from contextlib import asynccontextmanager
 from typing import Optional
 
