@@ -68,8 +68,8 @@ def get_mnist_predictor():
 
 def get_mnist_model():
     """Lazy getter untuk model Keras MNIST."""
-    predictor = get_mnist_predictor()
-    return predictor.get_model()
+    from src.mnist_predictor import get_model as _get_mnist_m
+    return _get_mnist_m()
 
 
 def get_classifier_predictor():
@@ -83,8 +83,8 @@ def get_classifier_predictor():
 
 def get_classifier_model():
     """Lazy getter untuk model Keras Image Classifier (Cats vs Dogs)."""
-    predictor = get_classifier_predictor()
-    return predictor.get_model()
+    from src.predictor import get_model as _get_img_m
+    return _get_img_m()
 
 
 # ==============================================================================
@@ -163,13 +163,15 @@ def health_check():
 @app.get("/health", summary="Health Check Status")
 def health():
     """Memeriksa status server dan apakah model sudah dimuat ke memori atau belum."""
+    from src.mnist_predictor import _mnist_model
+    from src.predictor import _classifier_model
     return {
         "status": "healthy",
         "lazy_loading": True,
         "models_in_memory": {
             "house_model": _house_model is not None,
-            "mnist_model": _mnist_predictor is not None and _mnist_predictor.model is not None,
-            "classifier_model": _classifier_predictor is not None and _classifier_predictor.model is not None,
+            "mnist_model": _mnist_model is not None,
+            "classifier_model": _classifier_model is not None,
         }
     }
 
@@ -231,9 +233,9 @@ def predict_handwrite(payload: HandwriteRequest):
     Endpoint untuk mendeteksi angka tulisan tangan (0-9) dari gambar canvas base64.
     Model MNIST CNN akan dimuat secara lazy saat pertama kali dipanggil.
     """
-    predictor = get_mnist_predictor()
+    from src.mnist_predictor import predict as predict_digit
     try:
-        result = predictor.predict(payload.image_base64)
+        result = predict_digit(payload.image_base64)
         return HandwriteResponse(
             predicted_digit=result["predicted_digit"],
             confidence=result["confidence"]
@@ -263,11 +265,11 @@ async def predict(
     """
     upload = image or file
     if upload is not None and upload.filename:
-        predictor = get_classifier_predictor()
+        from src.predictor import predict as predict_image
         try:
             contents = await upload.read()
             stream = io.BytesIO(contents)
-            result = predictor.predict(stream)
+            result = predict_image(stream)
             return {
                 "success": True,
                 **result
@@ -288,13 +290,13 @@ async def predict(
             features = HouseFeatures(**body)
             return predict_house_pricing(features)
         elif "image_base64" in body:
-            predictor = get_classifier_predictor()
+            from src.predictor import predict as predict_image
             import base64
             b64_data = body["image_base64"]
             if "," in b64_data:
                 b64_data = b64_data.split(",", 1)[1]
             image_bytes = base64.b64decode(b64_data)
-            result = predictor.predict(io.BytesIO(image_bytes))
+            result = predict_image(io.BytesIO(image_bytes))
             return {"success": True, **result}
 
     raise HTTPException(
