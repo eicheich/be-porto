@@ -1,18 +1,15 @@
-import requests
-import time
+from fastapi.testclient import TestClient
+from main import app
 
-BASE_URL = "http://127.0.0.1:8000"
+client = TestClient(app)
 
 def test_health():
     print("\n--- [1] Menguji Endpoint GET / (Health Check) ---")
-    try:
-        res = requests.get(f"{BASE_URL}/")
-        print(f"Status Code: {res.status_code}")
-        print("Response JSON:", res.json())
-        assert res.status_code == 200
-        print(">> Health Check BERHASIL")
-    except Exception as e:
-        print(f"Error: {e}")
+    res = client.get("/")
+    print(f"Status Code: {res.status_code}")
+    print("Response JSON:", res.json())
+    assert res.status_code == 200
+    print(">> Health Check BERHASIL")
 
 def test_predict_success():
     print("\n--- [2] Menguji Endpoint POST /predict-house-pricing (Valid Input) ---")
@@ -23,16 +20,13 @@ def test_predict_success():
         "KM": 2,
         "GRS": 1
     }
-    try:
-        res = requests.post(f"{BASE_URL}/predict-house-pricing", json=payload)
-        print(f"Status Code: {res.status_code}")
-        print("Response JSON:", res.json())
-        assert res.status_code == 200
-        assert res.json().get("status") == "sukses"
-        print(f">> Estimasi Harga: Rp {res.json().get('estimasi_harga'):,.2f}")
-        print(">> Prediksi Harga Rumah BERHASIL")
-    except Exception as e:
-        print(f"Error: {e}")
+    res = client.post("/predict-house-pricing", json=payload)
+    print(f"Status Code: {res.status_code}")
+    print("Response JSON:", res.json())
+    assert res.status_code == 200
+    assert res.json().get("status") == "sukses"
+    print(f">> Estimasi Harga: Rp {res.json().get('estimasi_harga'):,.2f}")
+    print(">> Prediksi Harga Rumah BERHASIL")
 
 def test_predict_validation_error():
     print("\n--- [3] Menguji Validasi Input Pydantic (Invalid Input: LB <= 0) ---")
@@ -43,18 +37,15 @@ def test_predict_validation_error():
         "KM": 2,
         "GRS": 1
     }
-    try:
-        res = requests.post(f"{BASE_URL}/predict-house-pricing", json=payload)
-        print(f"Status Code: {res.status_code}")
-        print("Response JSON:", res.json())
-        assert res.status_code == 422  # Unprocessable Entity dari Pydantic
-        print(">> Validasi Pydantic BERHASIL menangkap error (Status 422)")
-    except Exception as e:
-        print(f"Error: {e}")
+    res = client.post("/predict-house-pricing", json=payload)
+    print(f"Status Code: {res.status_code}")
+    print("Response JSON:", res.json())
+    assert res.status_code == 422  # Unprocessable Entity dari Pydantic
+    print(">> Validasi Pydantic BERHASIL menangkap error (Status 422)")
 
 if __name__ == "__main__":
-    print(f"Menguji FastAPI House Pricing di {BASE_URL}...")
+    print("Menguji FastAPI House Pricing via TestClient...")
     test_health()
     test_predict_success()
     test_predict_validation_error()
-
+    print("\n=== SEMUA PENGUJIAN HOUSE PRICING BERHASIL! ===")

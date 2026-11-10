@@ -26,6 +26,10 @@ wheels/
 .installed.cfg
 *.egg
 
+# Secrets & Environment
+.env
+.env.*
+
 # IDE
 .vscode/
 .idea/
@@ -35,11 +39,3 @@ wheels/
 # OS
 .DS_Store
 Thumbs.db
-
-# cPanel Phusion Passenger
-# Pastikan folder tmp dan restart.txt tetap terlacak
-tmp/*
-!tmp/restart.txt
-!tmp/.gitkeep
-
-

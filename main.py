@@ -1,59 +1,60 @@
 import io
 import os
 import sys
+import threading
 from contextlib import asynccontextmanager
 from typing import Optional
 
-# 1. Konfigurasi Environment Pembatas Resource & Threading (CloudLinux nproc limit & CPU mode)
+# 1. Konfigurasi Threading & CPU (Optimasi vCPU Docker Container)
 os.environ.setdefault("CUDA_VISIBLE_DEVICES", "-1")
-os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
-os.environ.setdefault("OMP_NUM_THREADS", "1")
-os.environ.setdefault("TF_NUM_INTRAOP_THREADS", "1")
-os.environ.setdefault("TF_NUM_INTEROP_THREADS", "1")
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+os.environ.setdefault("OMP_NUM_THREADS", os.getenv("OMP_NUM_THREADS", "2"))
+os.environ.setdefault("TF_NUM_INTRAOP_THREADS", os.getenv("TF_NUM_INTRAOP_THREADS", "2"))
+os.environ.setdefault("TF_NUM_INTEROP_THREADS", os.getenv("TF_NUM_INTEROP_THREADS", "1"))
 
 import pandas as pd
 import uvicorn
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile, status
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+from src.config import (
+    BASE_DIR,
+    CATDOG_MODEL_PATH,
+    MNIST_MODEL_PATH,
+    HOUSE_MODEL_PATH,
+    ALLOWED_EXTENSIONS,
+    MAX_CONTENT_LENGTH,
+    MAX_BASE64_LENGTH,
+    HOST,
+    PORT,
+    CORS_ORIGINS,
+)
 
 # ==============================================================================
-# 2. MEKANISME LAZY LOADING SINGLETON GETTERS
-# Tidak ada pemuatan model machine learning di tingkat modul global saat startup!
+# 2. MEKANISME LAZY LOADING SINGLETON GETTERS (THREAD-SAFE)
+# Model HANYA dimuat saat request pertama masuk ke endpoint terkait!
 # ==============================================================================
 _house_model = None
+_house_lock = threading.Lock()
 _mnist_predictor = None
 _classifier_predictor = None
 
 
-def get_model_path() -> Optional[str]:
-    """Mencari lokasi file model Random Forest di folder model/ atau mode/."""
-    candidates = [
-        os.path.join(BASE_DIR, "model", "model_random_forest.joblib"),
-        os.path.join(BASE_DIR, "mode", "model_random_forest.joblib"),
-        "model/model_random_forest.joblib",
-        "mode/model_random_forest.joblib",
-    ]
-    for path in candidates:
-        if os.path.exists(path):
-            return path
-    return None
-
-
 def get_house_model():
-    """Lazy getter untuk model Random Forest (House Pricing)."""
+    """Thread-safe lazy getter untuk model Random Forest (House Pricing)."""
     global _house_model
     if _house_model is None:
-        model_path = get_model_path()
-        if model_path:
-            import joblib
-            print(f"[INFO] [Lazy Load] Memuat model Random Forest dari: {model_path}")
-            _house_model = joblib.load(model_path)
-            print("[INFO] Model Random Forest berhasil dimuat ke memori.")
-        else:
-            print("[WARNING] File 'model_random_forest.joblib' tidak ditemukan di server.")
+        with _house_lock:
+            if _house_model is None:
+                if os.path.exists(HOUSE_MODEL_PATH):
+                    import joblib
+                    print(f"[INFO] [Lazy Load] Memuat model Random Forest dari: {HOUSE_MODEL_PATH}")
+                    _house_model = joblib.load(HOUSE_MODEL_PATH)
+                    print("[INFO] Model Random Forest berhasil dimuat ke memori.")
+                else:
+                    print(f"[WARNING] File '{HOUSE_MODEL_PATH}' tidak ditemukan di server.")
     return _house_model
 
 
@@ -92,27 +93,25 @@ def get_classifier_model():
 # ==============================================================================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """
-    Startup instan tanpa memuat model ke memori (Lazy Loading aktif).
-    Menghindari killed by signal 15 / startup timeout pada Phusion Passenger cPanel.
-    """
+    """Startup instan tanpa memuat model ke memori (Lazy Loading aktif)."""
     print("[INFO] Server FastAPI berhasil boot instan (Lazy Loading aktif).")
     yield
     print("[INFO] Server FastAPI shutdown.")
 
 
 app = FastAPI(
-    title="House Pricing & ML API",
-    description="Backend API berbasis FastAPI dengan mekanisme Lazy Loading untuk kompatibilitas CloudLinux/cPanel Passenger",
-    version="1.2.0",
+    title="Portfolio Machine Learning API",
+    description="Production-ready FastAPI backend for ML models with Lazy Loading and container optimization.",
+    version="2.0.0",
     lifespan=lifespan
 )
 
-# Konfigurasi CORS
+# Konfigurasi CORS yang aman
+is_wildcard = "*" in CORS_ORIGINS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=CORS_ORIGINS,
+    allow_credentials=not is_wildcard,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -122,11 +121,11 @@ app.add_middleware(
 # 4. SKEMA VALIDASI DATA (Pydantic Models)
 # ==============================================================================
 class HouseFeatures(BaseModel):
-    LB: float = Field(..., gt=0, description="Luas Bangunan (harus lebih besar dari 0)", examples=[120.0])
-    LT: float = Field(..., gt=0, description="Luas Tanah (harus lebih besar dari 0)", examples=[150.0])
-    KT: int = Field(..., ge=0, description="Jumlah Kamar Tidur (minimal 0)", examples=[3])
-    KM: int = Field(..., ge=0, description="Jumlah Kamar Mandi (minimal 0)", examples=[2])
-    GRS: int = Field(..., ge=0, description="Jumlah Garasi (minimal 0)", examples=[1])
+    LB: float = Field(..., gt=0, le=100000, description="Luas Bangunan (m2)", examples=[120.0])
+    LT: float = Field(..., gt=0, le=100000, description="Luas Tanah (m2)", examples=[150.0])
+    KT: int = Field(..., ge=0, le=100, description="Jumlah Kamar Tidur", examples=[3])
+    KM: int = Field(..., ge=0, le=100, description="Jumlah Kamar Mandi", examples=[2])
+    GRS: int = Field(..., ge=0, le=100, description="Jumlah Garasi", examples=[1])
 
 
 class PredictionResponse(BaseModel):
@@ -135,7 +134,11 @@ class PredictionResponse(BaseModel):
 
 
 class HandwriteRequest(BaseModel):
-    image_base64: str = Field(..., description="String base64 gambar tulisan tangan dari canvas")
+    image_base64: str = Field(
+        ...,
+        max_length=MAX_BASE64_LENGTH,
+        description="String base64 gambar tulisan tangan dari canvas"
+    )
 
 
 class HandwriteResponse(BaseModel):
@@ -143,26 +146,35 @@ class HandwriteResponse(BaseModel):
     confidence: float = Field(..., description="Tingkat keyakinan model terhadap prediksi (0.0 - 1.0)")
 
 
+# Helper validasi ekstensi file
+def is_allowed_file(filename: Optional[str]) -> bool:
+    if not filename or "." not in filename:
+        return False
+    ext = filename.rsplit(".", 1)[1].lower()
+    return ext in ALLOWED_EXTENSIONS
+
+
 # ==============================================================================
 # 5. ENDPOINTS
 # ==============================================================================
 @app.get("/", summary="Health Check Root")
 def health_check():
-    """Endpoint kesehatan cepat tanpa memicu pemuatan model ke memori."""
+    """Endpoint root ringan tanpa memicu pemuatan model."""
     return {
         "status": "online",
-        "message": "FastAPI ML Backend is running (Lazy Loading enabled)",
+        "service": "Portfolio Machine Learning API",
+        "lazy_loading": True,
         "model_files": {
-            "house_pricing": os.path.exists(get_model_path() or ""),
-            "mnist_cnn": os.path.exists(os.path.join(BASE_DIR, "model", "mnist_cnn_model.keras")),
-            "image_classifier": os.path.exists(os.path.join(BASE_DIR, "model", "model_classification_3class.keras")),
+            "house_pricing": os.path.exists(HOUSE_MODEL_PATH),
+            "mnist_cnn": os.path.exists(MNIST_MODEL_PATH),
+            "image_classifier": os.path.exists(CATDOG_MODEL_PATH),
         }
     }
 
 
 @app.get("/health", summary="Health Check Status")
 def health():
-    """Memeriksa status server dan apakah model sudah dimuat ke memori atau belum."""
+    """Memeriksa status container dan model yang sedang aktif di memori (Azure Probe)."""
     from src.mnist_predictor import _mnist_model
     from src.predictor import _classifier_model
     return {
@@ -182,10 +194,10 @@ def health():
     summary="Prediksi Harga Rumah",
     status_code=status.HTTP_200_OK
 )
-def predict_house_pricing(features: HouseFeatures):
+async def predict_house_pricing(features: HouseFeatures):
     """
-    Endpoint utama untuk melakukan prediksi harga rumah.
-    Model Random Forest akan dimuat secara lazy saat pertama kali dipanggil.
+    Endpoint utama untuk prediksi harga rumah (Random Forest).
+    Inferensi dijalankan di worker thread agar tidak memblokir event loop.
     """
     model = get_house_model()
     if model is None:
@@ -195,17 +207,19 @@ def predict_house_pricing(features: HouseFeatures):
         )
 
     try:
-        input_data = {
-            "LB": [features.LB],
-            "LT": [features.LT],
-            "KT": [features.KT],
-            "KM": [features.KM],
-            "GRS": [features.GRS]
-        }
-        df_input = pd.DataFrame(input_data, columns=["LB", "LT", "KT", "KM", "GRS"])
-        raw_prediction = model.predict(df_input)
-        estimasi_nilai = float(raw_prediction[0])
+        def _run_inference():
+            input_data = {
+                "LB": [features.LB],
+                "LT": [features.LT],
+                "KT": [features.KT],
+                "KM": [features.KM],
+                "GRS": [features.GRS]
+            }
+            df_input = pd.DataFrame(input_data, columns=["LB", "LT", "KT", "KM", "GRS"])
+            raw_prediction = model.predict(df_input)
+            return float(raw_prediction[0])
 
+        estimasi_nilai = await run_in_threadpool(_run_inference)
         return PredictionResponse(
             estimasi_harga=estimasi_nilai,
             status="sukses"
@@ -228,14 +242,15 @@ def predict_house_pricing(features: HouseFeatures):
     response_model=HandwriteResponse,
     include_in_schema=False
 )
-def predict_handwrite(payload: HandwriteRequest):
+async def predict_handwrite(payload: HandwriteRequest):
     """
     Endpoint untuk mendeteksi angka tulisan tangan (0-9) dari gambar canvas base64.
-    Model MNIST CNN akan dimuat secara lazy saat pertama kali dipanggil.
+    Inferensi dijalankan secara asynchronous di threadpool (non-blocking).
     """
     from src.mnist_predictor import predict as predict_digit
+
     try:
-        result = predict_digit(payload.image_base64)
+        result = await run_in_threadpool(predict_digit, payload.image_base64)
         return HandwriteResponse(
             predicted_digit=result["predicted_digit"],
             confidence=result["confidence"]
@@ -260,16 +275,30 @@ async def predict(
 ):
     """
     Endpoint Klasifikasi Gambar (Cats vs Dogs).
-    Menerima file gambar (multipart/form-data) atau payload JSON base64.
-    Model Keras akan dimuat secara lazy saat pertama kali dipanggil.
+    Menerima file gambar (multipart/form-data) dengan validasi ukuran & ekstensi,
+    atau payload JSON base64.
     """
     upload = image or file
+
+    # 1. Penanganan Multipart Form Data
     if upload is not None and upload.filename:
+        if not is_allowed_file(upload.filename):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Format file tidak didukung. Format yang diizinkan: {', '.join(ALLOWED_EXTENSIONS)}"
+            )
+
+        contents = await upload.read()
+        if len(contents) > MAX_CONTENT_LENGTH:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=f"Ukuran file melebihi batas maksimum {MAX_CONTENT_LENGTH // (1024 * 1024)} MB."
+            )
+
         from src.predictor import predict as predict_image
         try:
-            contents = await upload.read()
             stream = io.BytesIO(contents)
-            result = predict_image(stream)
+            result = await run_in_threadpool(predict_image, stream)
             return {
                 "success": True,
                 **result
@@ -280,30 +309,60 @@ async def predict(
                 detail=f"Terjadi kesalahan saat memproses gambar: {str(e)}"
             )
 
+    # 2. Penanganan JSON Payload (Base64 atau House Pricing Fallback)
     content_type = request.headers.get("content-type", "")
     if "application/json" in content_type:
         try:
             body = await request.json()
         except Exception:
             body = {}
+
         if "LB" in body:
             features = HouseFeatures(**body)
-            return predict_house_pricing(features)
+            return await predict_house_pricing(features)
+
         elif "image_base64" in body:
-            from src.predictor import predict as predict_image
-            import base64
             b64_data = body["image_base64"]
+            if not isinstance(b64_data, str) or len(b64_data) > MAX_BASE64_LENGTH:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="String base64 tidak valid atau melebihi batas ukuran 2 MB."
+                )
+
+            import base64
             if "," in b64_data:
                 b64_data = b64_data.split(",", 1)[1]
-            image_bytes = base64.b64decode(b64_data)
-            result = predict_image(io.BytesIO(image_bytes))
-            return {"success": True, **result}
+
+            try:
+                image_bytes = base64.b64decode(b64_data)
+            except Exception as e:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Format base64 rusak: {str(e)}"
+                )
+
+            if len(image_bytes) > MAX_CONTENT_LENGTH:
+                raise HTTPException(
+                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                    detail=f"Ukuran gambar base64 melebihi batas {MAX_CONTENT_LENGTH // (1024 * 1024)} MB."
+                )
+
+            from src.predictor import predict as predict_image
+            try:
+                stream = io.BytesIO(image_bytes)
+                result = await run_in_threadpool(predict_image, stream)
+                return {"success": True, **result}
+            except Exception as e:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Terjadi kesalahan saat memproses gambar base64: {str(e)}"
+                )
 
     raise HTTPException(
         status_code=status.HTTP_400_BAD_REQUEST,
-        detail="Harap kirimkan file gambar melalui multipart/form-data dengan key 'image'."
+        detail="Harap kirimkan file gambar melalui multipart/form-data dengan key 'image' atau 'file'."
     )
 
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("main:app", host=HOST, port=PORT, reload=True)

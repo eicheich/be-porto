@@ -1,41 +1,50 @@
 import io
-import time
 import os
+import threading
+import time
 import numpy as np
 from PIL import Image
-from src.config import MODEL_PATH, TARGET_SIZE, CLASS_NAMES
+from src.config import CATDOG_MODEL_PATH, TARGET_SIZE, CLASS_NAMES
+
+# Protect against decompression bomb attacks
+Image.MAX_IMAGE_PIXELS = 10_000_000
 
 # ==============================================================================
-# SINGLETON LAZY-LOAD FUNCTION
-# Model HANYA dimuat saat get_model() dipanggil pertama kali, bukan saat modul di-import!
+# SINGLETON LAZY-LOAD FUNCTION (THREAD-SAFE)
 # ==============================================================================
 _classifier_model = None
+_classifier_lock = threading.Lock()
+
 
 def get_model():
-    """Singleton getter untuk memuat model klasifikasi gambar secara lazy."""
+    """Thread-safe singleton getter untuk memuat model klasifikasi gambar secara lazy."""
     global _classifier_model
     if _classifier_model is None:
-        try:
-            import tensorflow as tf
-            tf.config.threading.set_intra_op_parallelism_threads(1)
-            tf.config.threading.set_inter_op_parallelism_threads(1)
-        except Exception:
-            pass
+        with _classifier_lock:
+            if _classifier_model is None:
+                intra_threads = int(os.getenv("TF_NUM_INTRAOP_THREADS", "2"))
+                inter_threads = int(os.getenv("TF_NUM_INTEROP_THREADS", "1"))
+                try:
+                    import tensorflow as tf
+                    tf.config.threading.set_intra_op_parallelism_threads(intra_threads)
+                    tf.config.threading.set_inter_op_parallelism_threads(inter_threads)
+                except Exception:
+                    pass
 
-        try:
-            import keras
-            print(f"[INFO] [Lazy Load] Memuat model Keras dari: {MODEL_PATH}")
-            _classifier_model = keras.models.load_model(MODEL_PATH)
-            print("[INFO] Model Keras berhasil dimuat ke memori.")
-        except Exception as e:
-            try:
-                from tensorflow import keras as tf_keras
-                print(f"[INFO] [Lazy Load] Mencoba memuat via tf.keras dari: {MODEL_PATH}")
-                _classifier_model = tf_keras.models.load_model(MODEL_PATH)
-                print("[INFO] Model Keras berhasil dimuat via tf.keras.")
-            except Exception as err:
-                print(f"[ERROR] Gagal memuat model klasifikasi gambar: {err}")
-                _classifier_model = None
+                try:
+                    import keras
+                    print(f"[INFO] [Lazy Load] Memuat model Keras dari: {CATDOG_MODEL_PATH}")
+                    _classifier_model = keras.models.load_model(CATDOG_MODEL_PATH)
+                    print("[INFO] Model Keras berhasil dimuat ke memori.")
+                except Exception as e:
+                    try:
+                        from tensorflow import keras as tf_keras
+                        print(f"[INFO] [Lazy Load] Mencoba memuat via tf.keras dari: {CATDOG_MODEL_PATH}")
+                        _classifier_model = tf_keras.models.load_model(CATDOG_MODEL_PATH)
+                        print("[INFO] Model Keras berhasil dimuat via tf.keras.")
+                    except Exception as err:
+                        print(f"[ERROR] Gagal memuat model klasifikasi gambar: {err}")
+                        _classifier_model = None
     return _classifier_model
 
 
@@ -59,7 +68,7 @@ def predict(file_stream) -> dict:
     """Menjalankan inferensi dengan mengambil model via get_model()."""
     model = get_model()
     if model is None:
-        raise RuntimeError(f"Model klasifikasi gambar di '{MODEL_PATH}' tidak tersedia atau gagal dimuat.")
+        raise RuntimeError(f"Model klasifikasi gambar di '{CATDOG_MODEL_PATH}' tidak tersedia atau gagal dimuat.")
 
     start_time = time.time()
     processed_img = preprocess_image(file_stream)
@@ -85,7 +94,7 @@ def predict(file_stream) -> dict:
 
 
 class ImagePredictor:
-    def __init__(self, model_path=MODEL_PATH):
+    def __init__(self, model_path=CATDOG_MODEL_PATH):
         self.model_path = model_path
 
     @property

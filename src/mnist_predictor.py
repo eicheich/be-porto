@@ -1,43 +1,50 @@
 import io
 import os
 import base64
+import threading
 import numpy as np
 from PIL import Image, ImageOps
+from src.config import MNIST_MODEL_PATH, MAX_BASE64_LENGTH
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-MNIST_MODEL_PATH = os.path.join(BASE_DIR, "model", "mnist_cnn_model.keras")
+# Protect against decompression bomb attacks
+Image.MAX_IMAGE_PIXELS = 10_000_000
 
 # ==============================================================================
-# SINGLETON LAZY-LOAD FUNCTION
-# Model HANYA dimuat saat get_model() dipanggil pertama kali, bukan saat modul di-import!
+# SINGLETON LAZY-LOAD FUNCTION (THREAD-SAFE)
 # ==============================================================================
 _mnist_model = None
+_mnist_lock = threading.Lock()
+
 
 def get_model():
-    """Singleton getter untuk memuat model MNIST CNN secara lazy."""
+    """Thread-safe singleton getter untuk memuat model MNIST CNN secara lazy."""
     global _mnist_model
     if _mnist_model is None:
-        try:
-            import tensorflow as tf
-            tf.config.threading.set_intra_op_parallelism_threads(1)
-            tf.config.threading.set_inter_op_parallelism_threads(1)
-        except Exception:
-            pass
+        with _mnist_lock:
+            if _mnist_model is None:
+                intra_threads = int(os.getenv("TF_NUM_INTRAOP_THREADS", "2"))
+                inter_threads = int(os.getenv("TF_NUM_INTEROP_THREADS", "1"))
+                try:
+                    import tensorflow as tf
+                    tf.config.threading.set_intra_op_parallelism_threads(intra_threads)
+                    tf.config.threading.set_inter_op_parallelism_threads(inter_threads)
+                except Exception:
+                    pass
 
-        try:
-            import keras
-            print(f"[INFO] [Lazy Load] Memuat model MNIST CNN dari: {MNIST_MODEL_PATH}")
-            _mnist_model = keras.models.load_model(MNIST_MODEL_PATH)
-            print("[INFO] Model MNIST CNN berhasil dimuat ke memori.")
-        except Exception as e:
-            try:
-                from tensorflow import keras as tf_keras
-                print(f"[INFO] [Lazy Load] Mencoba memuat model MNIST via tf.keras dari: {MNIST_MODEL_PATH}")
-                _mnist_model = tf_keras.models.load_model(MNIST_MODEL_PATH)
-                print("[INFO] Model MNIST CNN berhasil dimuat via tf.keras.")
-            except Exception as err:
-                print(f"[ERROR] Gagal memuat model MNIST: {err}")
-                _mnist_model = None
+                try:
+                    import keras
+                    print(f"[INFO] [Lazy Load] Memuat model MNIST CNN dari: {MNIST_MODEL_PATH}")
+                    _mnist_model = keras.models.load_model(MNIST_MODEL_PATH)
+                    print("[INFO] Model MNIST CNN berhasil dimuat ke memori.")
+                except Exception as e:
+                    try:
+                        from tensorflow import keras as tf_keras
+                        print(f"[INFO] [Lazy Load] Mencoba memuat model MNIST via tf.keras dari: {MNIST_MODEL_PATH}")
+                        _mnist_model = tf_keras.models.load_model(MNIST_MODEL_PATH)
+                        print("[INFO] Model MNIST CNN berhasil dimuat via tf.keras.")
+                    except Exception as err:
+                        print(f"[ERROR] Gagal memuat model MNIST: {err}")
+                        _mnist_model = None
     return _mnist_model
 
 
@@ -54,6 +61,9 @@ def preprocess_base64_image(base64_str: str) -> np.ndarray:
     """
     if not base64_str or not isinstance(base64_str, str):
         raise ValueError("Input base64 string tidak valid atau kosong.")
+
+    if len(base64_str) > MAX_BASE64_LENGTH:
+        raise ValueError("Ukuran payload base64 melebihi batas maksimum 2 MB.")
 
     # 1. Bersihkan prefix data:image/...;base64,
     if "," in base64_str:

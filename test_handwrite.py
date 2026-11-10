@@ -2,6 +2,8 @@ import io
 import base64
 import numpy as np
 from PIL import Image, ImageDraw
+from fastapi.testclient import TestClient
+from main import app
 
 def create_sample_digit_image():
     # Buat kanvas putih ukuran 280x280 (seperti canvas di browser)
@@ -19,9 +21,6 @@ def create_sample_digit_image():
 
 def test_fastapi():
     print("\n--- Menguji FastAPI (/predict-handwrite/) ---")
-    from fastapi.testclient import TestClient
-    from main import app
-
     client = TestClient(app)
     
     # 1. Health check
@@ -41,24 +40,11 @@ def test_fastapi():
     assert 0.0 <= data["confidence"] <= 1.0
     print(f"Hasil prediksi FastAPI: Digit {data['predicted_digit']} (Confidence: {data['confidence']})")
 
-def test_flask():
-    print("\n--- Menguji Flask (/predict-handwrite/) ---")
-    from app import app as flask_app
-    client = flask_app.test_client()
-
-    sample_b64 = create_sample_digit_image()
-    res = client.post("/predict-handwrite/", json={"image_base64": sample_b64})
-    print("Flask /predict-handwrite/ response:", res.status_code, res.get_json())
-    assert res.status_code == 200
-    data = res.get_json()
-    assert "predicted_digit" in data
-    assert "confidence" in data
-    assert isinstance(data["predicted_digit"], int)
-    assert 0.0 <= data["confidence"] <= 1.0
-    print(f"Hasil prediksi Flask: Digit {data['predicted_digit']} (Confidence: {data['confidence']})")
+    # 3. Test validation on empty / invalid base64
+    res_invalid = client.post("/predict-handwrite/", json={"image_base64": "bukan_base64"})
+    print("Invalid Base64 status:", res_invalid.status_code)
+    assert res_invalid.status_code == 400
 
 if __name__ == "__main__":
     test_fastapi()
-    test_flask()
     print("\n=== SEMUA PENGUJIAN PREDIKSI ANGKA (MNIST) BERHASIL! ===")
-

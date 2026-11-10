@@ -1,0 +1,40 @@
+# Version control & metadata
+.git/
+.gitignore
+.gitattributes
+
+# Python byte code & environments
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+
+# Testing & scratch files
+test_*.py
+tests/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Documentation & Assets
+README.md
+*.png
+*.jpg
+*.jpeg
+*.svg
+
+# IDEs & System files
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+Dockerfile
+.dockerignore
+

@@ -1,9 +1,16 @@
-# Backend API Portfolio: House Pricing (FastAPI) & Image Classification (Flask)
+# Portfolio Machine Learning Backend API (FastAPI + Docker)
 
-Backend API yang menyediakan layanan Machine Learning:
-1. **House Pricing Prediction (FastAPI)**: Model estimasi harga rumah berbasis Random Forest Regressor (`model_random_forest.joblib`).
-2. **Image Classification (Flask)**: Model klasifikasi gambar 3 kelas (cats, dogs, others) berbasis Keras (`model_classification_3class.keras`).
-3. **Indo Text-to-SQL**: Model konversi natural language ke SQL (Qwen2.5-Coder LoRA).
+Backend API production-ready berkinerja tinggi berbasis **FastAPI**, dioptimalkan untuk deployment container pada **Microsoft Azure** (Azure Container Apps / App Service) dengan **biaya paling efisien (Lowest Cost)**.
+
+---
+
+## 🌟 Fitur Utama & Model ML
+1. **House Pricing Prediction**: Model Random Forest Regressor (`model/model_random_forest.joblib`).
+2. **Handwritten Digit Recognizer**: Model Deep Learning CNN MNIST 10-Class (`model/mnist_cnn_model.keras`).
+3. **Cats vs Dogs Image Classifier**: Model CNN Keras 3-Class (`model/model_classification_3class.keras`).
+4. **Thread-Safe Lazy Loading**: Model hanya dimuat ke memori saat endpoint pertama kali menerima request (startup container < 0.2 detik).
+5. **Non-Blocking Asynchronous Processing**: Seluruh inferensi CPU-bound dijalankan di worker thread pool (`run_in_threadpool`), menjaga event loop tetap responsif.
+6. **Security Hardening**: Validasi batas ukuran file (max 5 MB), batas panjang base64 (max 2 MB), sanitasi ekstensi gambar, dan perlindungan Decompression Bomb via Pillow.
 
 ---
 
@@ -12,262 +19,108 @@ Backend API yang menyediakan layanan Machine Learning:
 ```text
 be-porto/
 │
-├── main.py                                  # Entrypoint FastAPI (House Pricing Prediction)
-├── app.py                                   # Entrypoint Flask (Image Classification & Text-to-SQL)
-├── test_house_pricing.py                    # Skrip pengujian FastAPI House Pricing
-├── test_api.py                              # Skrip pengujian Flask API
-├── requirements.txt                         # Daftar dependensi library Python
+├── main.py                     # Entrypoint utama FastAPI & route handlers
+├── requirements.txt            # Dependensi lean & hemat memori (tanpa PyTorch/Flask)
+├── Dockerfile                  # Container production Linux slim (Non-root user)
+├── .dockerignore               # Optimasi layer cache & ukuran image
 │
-├── mode/ & model/
-│   ├── model_random_forest.joblib           # Model Regresi Harga Rumah
-│   └── model_classification_3class.keras    # Model Keras Klasifikasi Gambar
+├── model/                      # Direktori penyimpanan bobot model
+│   ├── mnist_cnn_model.keras
+│   ├── model_classification_3class.keras
+│   └── model_random_forest.joblib
 │
-└── src/
-    ├── config.py
-    ├── predictor.py
-    └── sql_generator.py
+├── src/
+│   ├── config.py               # Konfigurasi path, batas upload, & CORS
+│   ├── predictor.py            # Predictor & Lazy Loader Klasifikasi Gambar (Thread-safe)
+│   └── mnist_predictor.py      # Predictor & Lazy Loader MNIST Digit (Thread-safe)
+│
+├── test_api.py                 # Pengujian otomatis endpoint Klasifikasi Gambar
+├── test_handwrite.py           # Pengujian otomatis endpoint MNIST Digit
+└── test_house_pricing.py       # Pengujian otomatis endpoint Harga Rumah
 ```
 
 ---
 
-## 🚀 Menjalankan Server FastAPI (House Pricing Prediction)
+## 🚀 Menjalankan Secara Lokal
 
-Jalankan perintah ini di terminal:
+### 1. Menggunakan Python Virtual Environment
 ```bash
-uvicorn main:app --reload
-```
-*(Server akan berjalan di `http://127.0.0.1:8000` dengan Swagger UI interaktif di `http://127.0.0.1:8000/docs`)*
-
----
-
-## 📡 Dokumentasi Endpoint House Pricing (FastAPI)
-
-### 1. Health Check
-- **URL**: `GET /`
-- **Response (200 OK)**:
-  ```json
-  {
-    "status": "online",
-    "message": "House Pricing Prediction API is running",
-    "model_loaded": true,
-    "features_required": ["LB", "LT", "KT", "KM", "GRS"]
-  }
-  ```
-
-### 2. Prediksi Harga Rumah
-- **URL**: `POST /predict-house-pricing`
-- **Request Body (JSON)**:
-  ```json
-  {
-    "LB": 120.0,
-    "LT": 150.0,
-    "KT": 3,
-    "KM": 2,
-    "GRS": 1
-  }
-  ```
-- **Response Sukses (200 OK)**:
-  ```json
-  {
-    "estimasi_harga": 2777180000.0,
-    "status": "sukses"
-  }
-  ```
-- **Validasi Data**:
-  - `LB` (Luas Bangunan): wajib, > 0
-  - `LT` (Luas Tanah): wajib, > 0
-  - `KT` (Kamar Tidur): wajib, >= 0
-  - `KM` (Kamar Mandi): wajib, >= 0
-  - `GRS` (Garasi): wajib, >= 0
-
-### 3. Prediksi Angka Tulisan Tangan (MNIST CNN)
-- **URL**: `POST /predict-handwrite/` (atau `POST /predict-handwrite`)
-- **Headers**: `Content-Type: application/json`
-- **Request Body (JSON)**:
-  ```json
-  {
-    "image_base64": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA..."
-  }
-  ```
-- **Response Sukses (200 OK)**:
-  ```json
-  {
-    "predicted_digit": 7,
-    "confidence": 0.9982
-  }
-  ```
-- **Alur Preprocessing Gambar**:
-  1. Membersihkan prefix `data:image/...;base64,`.
-  2. Mendecode string base64 menjadi gambar (PIL).
-  3. Mengonversi alpha channel transparan menjadi background putih solid.
-  4. Mengubah gambar menjadi Grayscale (1 channel).
-  5. Melakukan resize menjadi 28x28 pixel.
-  6. Menginversi warna secara otomatis jika gambar canvas berlatar belakang putih dan coretan hitam (`ImageOps.invert`).
-  7. Normalisasi nilai pixel (dibagi 255.0) dan reshape menjadi `(1, 28, 28, 1)`.
-  8. Menjalankan inferensi pada model `model/mnist_cnn_model.keras`.
-
----
-
-## 🚀 Menjalankan Server Flask (Image Classification)
-
-```bash
-python app.py
-```
-*(Server Flask berjalan di `http://127.0.0.1:5000`)*
-
----
-
-## 🚀 Panduan Memulai
-
-### 1. Prasyarat
-- Python 3.10+ (Direkomendasikan Python 3.11 atau 3.12)
-- Pip
-
-### 2. Instalasi Dependensi
-
-```bash
-# Opsional: Buat dan aktifkan virtual environment
 python -m venv venv
-
-# Windows
-venv\Scripts\activate
-
-# Linux / macOS
+# Windows:
+.\venv\Scripts\activate
+# Linux/macOS:
 source venv/bin/activate
 
-# Install dependensi
 pip install -r requirements.txt
+uvicorn main:app --reload --port 8000
 ```
+Akses Swagger UI interaktif di: **`http://localhost:8000/docs`**
 
-### 3. Menjalankan Server
-
-Anda dapat menjalankan backend ini dengan salah satu cara berikut:
-
-**Opsi A — Python Flask (Rekomendasi Utama)**:
+### 2. Menggunakan Docker Secara Lokal
 ```bash
-python app.py
-```
+# Build image
+docker build -t be-porto:latest .
 
-**Opsi B — Uvicorn (ASGI)**:
+# Run container
+docker run -p 8000:8000 --name ml-api be-porto:latest
+```
+Uji health check:
 ```bash
-uvicorn main:app --reload --port 5000
+curl http://localhost:8000/health
 ```
 
-> **Catatan Penting**: Frontend Anda di `porto_web` secara default memanggil endpoint di `http://localhost:5000/predict`. Oleh karena itu, jika menggunakan Uvicorn, **pastikan sertakan flag `--port 5000`** (bukan port default 8000).
-
 ---
 
-## 📡 Dokumentasi Endpoint API
+## ☁️ Panduan Deploy ke Azure Container Apps (Biaya Terendah / $0)
 
-### 1. Cek Kesiapan Server (Health Check)
-Endpoint untuk memeriksa apakah server aktif dan model ML siap di memori.
+Azure Container Apps (ACA) pada **Consumption Plan** memberikan kuota gratis setiap bulan:
+- **180.000 vCPU-detik** & **360.000 GiB-detik** gratis.
+- **2 juta request** per bulan gratis.
+- Fitur **Scale-to-Zero** otomatis mematikan container saat tidak ada pengunjung sehingga tagihan **$0**.
 
-- **URL**: `/health`
-- **Method**: `GET`
-- **Response Sukses (200 OK)**:
-  ```json
-  {
-    "input_shape": [150, 150, 3],
-    "model_loaded": true,
-    "model_path": ".../model/model_classification_3class.keras",
-    "status": "healthy",
-    "target_classes": [
-      "cats",
-      "dogs",
-      "others"
-    ]
-  }
-  ```
-
----
-
-### 2. Prediksi Klasifikasi Gambar
-Endpoint untuk mengunggah file gambar dan menerima hasil klasifikasi.
-
-- **URL**: `/predict`
-- **Method**: `POST`
-- **Content-Type**: `multipart/form-data`
-- **Body Parameter**:
-  - `image` *(File, Wajib)*: File gambar berekstensi `.jpg`, `.jpeg`, `.png`, atau `.webp`.
-  *(Catatan: key `file` juga diterima)*
-
-- **Response Sukses (200 OK)**:
-  ```json
-  {
-    "success": true,
-    "prediction": "cats",
-    "confidence": 0.9421,
-    "probabilities": {
-      "cats": 0.9421,
-      "dogs": 0.0452,
-      "others": 0.0127
-    },
-    "execution_time_ms": 32.5
-  }
-  ```
-
-- **Response Gagal (400 / 413 / 500)**:
-  ```json
-  {
-    "success": false,
-    "error": "Format file tidak didukung. Format yang diizinkan: png, jpg, jpeg, webp"
-  }
-  ```
-
----
-
-## 🧪 Contoh Pengujian
-
-### A. Menggunakan cURL
-
+### Langkah 1: Push Image ke GitHub Container Registry (Gratis)
 ```bash
-# Health check
-curl -X GET http://127.0.0.1:5000/health
+# Login ke GitHub Container Registry
+echo $GITHUB_TOKEN | docker login ghcr.io -u USERNAME --password-stdin
 
-# Prediksi gambar
-curl -X POST http://127.0.0.1:5000/predict \
-  -F "image=@path/to/kucing.jpg"
+# Tag dan push image
+docker build -t ghcr.io/USERNAME/be-porto:latest .
+docker push ghcr.io/USERNAME/be-porto:latest
 ```
 
-### B. Menggunakan Postman
-1. Buat request baru dengan method **POST**.
-2. Masukkan URL: `http://localhost:5000/predict`.
-3. Buka tab **Body** $\rightarrow$ pilih **form-data**.
-4. Pada kolom **Key**, ketik `image` dan ubah tipe dropdown dari *Text* menjadi *File*.
-5. Pada kolom **Value**, pilih file gambar dari komputer Anda.
-6. Klik **Send**.
+### Langkah 2: Deploy di Azure CLI
+```bash
+# Buat resource group
+az group create --name rg-portfolio --location southeastasia
+
+# Buat Container Apps Environment
+az containerapp env create \
+  --name env-portfolio \
+  --resource-group rg-portfolio \
+  --location southeastasia
+
+# Deploy Container App dengan Scale-to-Zero & RAM 1 GB
+az containerapp create \
+  --name api-ml \
+  --resource-group rg-portfolio \
+  --environment env-portfolio \
+  --image ghcr.io/USERNAME/be-porto:latest \
+  --target-port 8000 \
+  --ingress external \
+  --cpu 0.5 \
+  --memory 1.0Gi \
+  --min-replicas 0 \
+  --max-replicas 2
+```
 
 ---
 
-## 💻 Panduan Integrasi Frontend (JavaScript / React / Vue)
+## 📡 Daftar Endpoint API
 
-Karena Anda akan membuat Frontend di project terpisah, fitur **CORS** sudah diaktifkan secara default di backend ini. Berikut contoh kode pemanggilan API menggunakan `fetch` dari frontend:
-
-```javascript
-// Contoh fungsi upload gambar di Frontend (React / Vue / Vanilla JS)
-async function uploadAndClassifyImage(file) {
-  const formData = new FormData();
-  formData.append("image", file); // 'image' sesuai key di backend
-
-  try {
-    const response = await fetch("http://localhost:5000/predict", {
-      method: "POST",
-      body: formData,
-      // Jangan set header 'Content-Type' secara manual, browser akan mengisinya otomatis beserta boundary-nya
-    });
-
-    const data = await response.json();
-    if (data.success) {
-      console.log("Prediksi:", data.prediction);
-      console.log("Tingkat Keyakinan (Confidence):", (data.confidence * 100).toFixed(2) + "%");
-      console.log("Detail Probabilitas:", data.probabilities);
-      return data;
-    } else {
-      console.error("Error dari backend:", data.error);
-    }
-  } catch (error) {
-    console.error("Gagal terhubung ke backend:", error);
-  }
-}
-```
-
+| Method | Endpoint | Deskripsi |
+| :--- | :--- | :--- |
+| `GET` | `/` | Root status & pengecekan ketersediaan file model |
+| `GET` | `/health` | Health probe container & monitoring status model di RAM |
+| `POST` | `/predict-house-pricing` | Estimasi harga rumah (JSON payload: `LB, LT, KT, KM, GRS`) |
+| `POST` | `/predict-handwrite/` | Prediksi angka tulisan tangan (JSON payload: `image_base64`) |
+| `POST` | `/predict` | Klasifikasi hewan/gambar (Multipart `image` file atau JSON `image_base64`) |
